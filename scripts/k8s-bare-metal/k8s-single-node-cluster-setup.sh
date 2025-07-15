@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Defaults
-METALLB_RANGE=""
+METALLB_IP_RANGE=""
 RANCHER_HOSTNAME=""
 INGRESS_IP=""
 
@@ -14,7 +14,7 @@ usage() {
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    --iprange) METALLB_RANGE="$2"; shift ;;
+    --iprange) METALLB_IP_RANGE="$2"; shift ;;
     --hostname) RANCHER_HOSTNAME="$2"; shift ;;
     --ingressip) INGRESS_IP="$2"; shift ;;
     -h|--help) usage ;;
@@ -23,11 +23,11 @@ while [[ "$#" -gt 0 ]]; do
   shift
 done
 
-if [[ -z "$METALLB_RANGE" || -z "$RANCHER_HOSTNAME" || -z "$INGRESS_IP" ]]; then
+if [[ -z "$METALLB_IP_RANGE" || -z "$RANCHER_HOSTNAME" || -z "$INGRESS_IP" ]]; then
   usage
 fi
 
-echo "▶ MetalLB IP Range: $METALLB_RANGE"
+echo "▶ MetalLB IP Range: $METALLB_IP_RANGE"
 echo "▶ Rancher Hostname: $RANCHER_HOSTNAME"
 echo "▶ Ingress IP: $INGRESS_IP"
 
