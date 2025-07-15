@@ -1,6 +1,34 @@
 #!/bin/bash
 set -euo pipefail
 
+# Defaults
+METALLB_RANGE=""
+RANCHER_HOSTNAME=""
+INGRESS_IP=""
+
+usage() {
+  echo "Usage: $0 -iprange <metallb-range> -hostname <rancher-hostname> -ingressip <ingress-ip>"
+  echo "Example: $0 -iprange 192.168.1.100-192.168.1.110 -hostname rancher.lab.local -ingressip 192.168.1.99"
+  exit 1
+}
+
+while getopts iprange:hostname:ingressip: flag; do
+  case "${flag}" in
+    iprange) METALLB_RANGE=${OPTARG} ;;
+    hostname) RANCHER_HOSTNAME=${OPTARG} ;;
+    ingressip) INGRESS_IP=${OPTARG} ;;
+    *) usage ;;
+  esac
+done
+
+if [[ -z "$METALLB_RANGE" || -z "$RANCHER_HOSTNAME" || -z "$INGRESS_IP" ]]; then
+  usage
+fi
+
+echo "▶ MetalLB IP Range: $METALLB_RANGE"
+echo "▶ Rancher Hostname: $RANCHER_HOSTNAME"
+echo "▶ Ingress IP: $INGRESS_IP"
+
 # Check if the script is run with sudo privileges
 if [[ $EUID -ne 0 ]]; then
   echo "This script must be run as root or with sudo privileges."
@@ -8,22 +36,22 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Prompt for MetalLB IP address range
-read -p "Enter the IP address range for MetalLB (e.g., 192.168.1.100-192.168.1.110): " METALLB_IP_RANGE
 if [[ -z "$METALLB_IP_RANGE" ]]; then
+  echo "Enter the IP address range for MetalLB (e.g., 192.168.1.100-192.168.1.110): "
   echo "Error: MetalLB IP address range is required. Please run the script again and provide the input."
   exit 1
 fi
 
 # Prompt for Rancher hostname
-read -p "Enter the desired Rancher hostname (e.g., rancher.example.com): " RANCHER_HOSTNAME
 if [[ -z "$RANCHER_HOSTNAME" ]]; then
+  echo "Enter the desired Rancher hostname (e.g., rancher.example.com): "
   echo "Error: Rancher hostname is required. Please run the script again and provide the input."
   exit 1
 fi
 
 # Prompt for Ingress Nginx LoadBalancer IP
-read -p "Enter the static IP address for the Nginx Ingress Controller LoadBalancer: " INGRESS_IP
 if [[ -z "$INGRESS_IP" ]]; then
+  echo "Enter the static IP address for the Nginx Ingress Controller LoadBalancer: "
   echo "Error: Static IP address for the Nginx Ingress Controller is required. Please run the script again and provide the input."
   exit 1
 fi
