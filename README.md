@@ -1,7 +1,7 @@
 # Script-helper
 
 
-# [🧰 Script Helper for HA Kubernetes Cluster](scripts/k8s-bare-metal)
+## [🧰 Script Helper for HA Kubernetes Cluster](scripts/k8s-bare-metal)
 ![CI](https://github.com/phimasonelabs/script-helper/actions/workflows/ci.yml/badge.svg)
 ![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Shell Script](https://img.shields.io/badge/script-bash-blue)
