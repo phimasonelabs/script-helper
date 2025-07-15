@@ -12,13 +12,15 @@ usage() {
   exit 1
 }
 
-while getopts iprange:hostname:ingressip: flag; do
-  case "${flag}" in
-    iprange) METALLB_RANGE=${OPTARG} ;;
-    hostname) RANCHER_HOSTNAME=${OPTARG} ;;
-    ingressip) INGRESS_IP=${OPTARG} ;;
-    *) usage ;;
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --iprange) METALLB_RANGE="$2"; shift ;;
+    --hostname) RANCHER_HOSTNAME="$2"; shift ;;
+    --ingressip) INGRESS_IP="$2"; shift ;;
+    -h|--help) usage ;;
+    *) echo "Unknown parameter passed: $1"; usage ;;
   esac
+  shift
 done
 
 if [[ -z "$METALLB_RANGE" || -z "$RANCHER_HOSTNAME" || -z "$INGRESS_IP" ]]; then
