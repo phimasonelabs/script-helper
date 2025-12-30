@@ -367,9 +367,21 @@ fi
 log_step "Phase 2: Control Plane Setup"
 log "Initializing Kubernetes control plane..."
 kubeadm init --pod-network-cidr=10.244.0.0/16
+
+# Setup kubeconfig for root (current user)
 mkdir -p $HOME/.kube
 sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config
 sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Setup kubeconfig for the user who called sudo
+if [[ -n "${SUDO_USER:-}" ]]; then
+  USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+  log "Setting up kubeconfig for user: $SUDO_USER ($USER_HOME)..."
+  mkdir -p "$USER_HOME/.kube"
+  sudo cp /etc/kubernetes/admin.conf "$USER_HOME/.kube/config"
+  sudo chown $(id -u "$SUDO_USER"):$(id -g "$SUDO_USER") "$USER_HOME/.kube/config"
+  log "Kubeconfig setup for $SUDO_USER assigned."
+fi
 kubectl taint nodes --all node-role.kubernetes.io/control-plane-
 
 echo "Control plane setup completed. Please label your worker nodes using 'kubectl label nodes --all node-role.kubernetes.io/worker=worker'."
