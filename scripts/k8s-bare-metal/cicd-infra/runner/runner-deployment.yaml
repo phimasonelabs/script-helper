@@ -1,0 +1,59 @@
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: RunnerDeployment
+metadata:
+  name: mjbl-k8s
+  namespace: actions-runner-system
+spec:
+  replicas: 1
+  template:
+    spec:
+      organization: mjbl-digital
+      dockerdWithinRunnerContainer: true
+      labels:
+        - registry-runner
+        - self-hosted
+        - linux
+
+      initContainers:
+        - name: install-harbor-ca
+          image: ubuntu:22.04
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              apt update && apt install -y ca-certificates
+              cp /harbor-ca/ca.crt /usr/local/share/ca-certificates/harbor-ca.crt
+              update-ca-certificates
+              mkdir -p /etc/docker/certs.d/mjcr.vte.mjblao.local
+              cp /harbor-ca/ca.crt /etc/docker/certs.d/mjcr.vte.mjblao.local/ca.crt
+          volumeMounts:
+            - name: harbor-ca
+              mountPath: /harbor-ca
+            - name: certs-global
+              mountPath: /usr/local/share/ca-certificates
+            - name: docker-certs
+              mountPath: /etc/docker/certs.d
+
+      containers:
+        - name: runner
+          image: ghcr.io/actions-runner-controller/actions-runner-controller/actions-runner-dind:ubuntu-22.04
+          securityContext:
+            privileged: true
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          volumeMounts:
+            - name: certs-global
+              mountPath: /usr/local/share/ca-certificates
+            - name: docker-certs
+              mountPath: /etc/docker/certs.d
+
+      volumes:
+        - name: harbor-ca
+          secret:
+            secretName: harbor-ca
+        - name: certs-global
+          emptyDir: {}
+        - name: docker-certs
+          emptyDir: {}

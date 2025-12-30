@@ -1,0 +1,18 @@
+expose:
+  type: ingress
+  tls:
+    enabled: true
+    secretName: harbor-tls
+  ingress:
+    hosts:
+      core: {{HOSTNAME}}
+      registry: {{HOSTNAME}}
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "0"
+      nginx.ingress.kubernetes.io/proxy-buffering: "off"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+
+harborAdminPassword: "ChangeThisPassword123!"
+persistence:
+  enabled: false
