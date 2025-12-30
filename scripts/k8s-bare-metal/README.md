@@ -34,6 +34,18 @@ Use the `-y` or `--force` flag to skip all confirmation prompts:
 sudo bash k8s-single-node-cluster-setup.sh --hostname rancher.lab.local -y
 ```
 
+### 🔥 High Availability (HA) Setup
+
+Provision the **first control plane node** of an HA cluster. Requires an external load balancer (e.g., HAProxy, Nginx, or kube-vip) to be pre-configured.
+
+```bash
+sudo bash k8s-single-node-cluster-setup.sh \
+  --hostname rancher.example.com \
+  --ha \
+  --endpoint "loadbalancer.example.com:6443"
+```
+*Note: The script will output the join commands for other control plane nodes.*
+
 ---
 
 ## 📋 Options
@@ -43,6 +55,8 @@ sudo bash k8s-single-node-cluster-setup.sh --hostname rancher.lab.local -y
 | `--hostname` | **Yes** | Rancher hostname (e.g., `rancher.example.com`) |
 | `--iprange` | No | MetalLB IP pool range. If not provided, MetalLB is skipped. |
 | `--ingressip` | Conditional | Static IP for Ingress. Required if `--iprange` is set. |
+| `--ha` | No | Enable High Availability mode (init first control plane node). |
+| `--endpoint` | Conditional | Control Plane Endpoint (host:port). Defaults to `hostname:6443` if not set. |
 | `-y`, `--force` | No | Skip all interactive confirmation prompts. |
 
 ---

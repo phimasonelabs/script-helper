@@ -55,7 +55,13 @@ METALLB_IP_RANGE=""
 RANCHER_HOSTNAME=""
 INGRESS_IP=""
 FORCE_MODE=false
-
+# Defaults
+METALLB_IP_RANGE=""
+RANCHER_HOSTNAME=""
+INGRESS_IP=""
+FORCE_MODE=false
+HA_MODE=false
+CP_ENDPOINT=""
 # Function to detect primary IP address (most reliable method)
 # Uses the IP that would be used to reach external destinations
 get_primary_ip() {
@@ -71,6 +77,11 @@ usage() {
   echo "  --hostname <hostname>  Rancher hostname (e.g., rancher.lab.local) [REQUIRED]"
   echo "  --ingressip <ip>       Static IP for Nginx Ingress LoadBalancer"
   echo "                         Required when --iprange is set, otherwise auto-detected"
+  echo "  --ingressip <ip>       Static IP for Nginx Ingress LoadBalancer"
+  echo "                         Required when --iprange is set, otherwise auto-detected"
+  echo "  --ha                   Enable High Availability mode (First control plane node)"
+  echo "  --endpoint <host:port> Control Plane Endpoint (e.g., loadbalancer.example.com:6443)"
+  echo "                         Optional if --ha is set (Defaults to $(hostname):6443)"
   echo "  -y, --yes, --force     Skip confirmation prompts (non-interactive mode)"
   echo "  -h, --help             Show this help message"
   echo ""
@@ -81,6 +92,9 @@ usage() {
   echo "  # Minimal setup without MetalLB (auto-detected IP, hostNetwork):"
   echo "  $0 --hostname rancher.lab.local"
   echo ""
+  echo "  # HA Setup (First Control Plane Node):"
+  echo "  $0 --hostname rancher.lab.local --ha --endpoint k8s-cluster.example.com:6443"
+  echo ""
   exit 1
 }
 
@@ -89,6 +103,8 @@ while [[ "$#" -gt 0 ]]; do
     --iprange) METALLB_IP_RANGE="$2"; shift ;;
     --hostname) RANCHER_HOSTNAME="$2"; shift ;;
     --ingressip) INGRESS_IP="$2"; shift ;;
+    --ha) HA_MODE=true ;;
+    --endpoint) CP_ENDPOINT="$2"; shift ;;
     -y|--yes|--force) FORCE_MODE=true ;;
     -h|--help) usage ;;
     *) echo "Unknown parameter passed: $1"; usage ;;
@@ -130,6 +146,22 @@ else
   ENABLE_METALLB=false
   # When MetalLB is skipped, use primary IP for ingress (hostNetwork mode)
   INGRESS_IP="${INGRESS_IP:-$PRIMARY_IP}"
+  # When MetalLB is skipped, use primary IP for ingress (hostNetwork mode)
+  INGRESS_IP="${INGRESS_IP:-$PRIMARY_IP}"
+fi
+
+# Validate HA parameters
+if [[ "$HA_MODE" == true ]]; then
+  if [[ -z "$CP_ENDPOINT" ]]; then
+    CP_ENDPOINT="$(hostname):6443"
+    echo "Using default HA endpoint: $CP_ENDPOINT"
+  fi
+  # Basic check for endpoint reachability (optional but recommended)
+  # HOST=$(echo $CP_ENDPOINT | cut -d: -f1)
+  # PORT=$(echo $CP_ENDPOINT | cut -d: -f2)
+  # if ! nc -z -w5 "$HOST" "$PORT"; then
+  #    echo "WARNING: Control Plane Endpoint $CP_ENDPOINT is not reachable. Proceeding anyway..."
+  # fi
 fi
 
 echo "=============================================="
@@ -142,6 +174,13 @@ if [[ "$ENABLE_METALLB" == true ]]; then
 else
   echo "▶ MetalLB: SKIPPED (no --iprange provided)"
   echo "▶ Ingress IP (hostNetwork): $INGRESS_IP"
+  echo "▶ Ingress IP (hostNetwork): $INGRESS_IP"
+fi
+if [[ "$HA_MODE" == true ]]; then
+  echo "▶ HA Mode: ENABLED"
+  echo "▶ Control Plane Endpoint: $CP_ENDPOINT"
+else
+  echo "▶ HA Mode: DISABLED (Single Node)"
 fi
 echo "=============================================="
 
@@ -365,8 +404,16 @@ fi
 
 # --- Control Plane Setup ---
 log_step "Phase 2: Control Plane Setup"
+log_step "Phase 2: Control Plane Setup"
 log "Initializing Kubernetes control plane..."
-kubeadm init --pod-network-cidr=10.244.0.0/16
+
+if [[ "$HA_MODE" == true ]]; then
+  log "Setting up HA Control Plane with endpoint: $CP_ENDPOINT"
+  kubeadm init --control-plane-endpoint "$CP_ENDPOINT" --upload-certs --pod-network-cidr=10.244.0.0/16
+else
+  log "Setting up Single Node Control Plane..."
+  kubeadm init --pod-network-cidr=10.244.0.0/16
+fi
 
 # Setup kubeconfig for root (current user)
 mkdir -p $HOME/.kube
@@ -597,10 +644,29 @@ if [[ "$ENABLE_METALLB" == false ]]; then
   log "      Make sure DNS or /etc/hosts points $RANCHER_HOSTNAME to $INGRESS_IP"
 fi
 log ""
+log ""
 log "Commands to join other nodes to the cluster:"
 log ""
+if [[ "$HA_MODE" == true ]]; then
+  log "---------------------------------------------------------"
+  log "🔹 JOIN CONTROL PLANE NODES:"
+  log "To add more control plane nodes, run the following command:"
+  log "  sudo kubeadm join $CP_ENDPOINT --token <token> --discovery-token-ca-cert-hash sha256:<hash> --control-plane --certificate-key <key>"
+  log ""
+  log "To recall the certificate key (if needed):"
+  log "  sudo kubeadm init phase upload-certs --upload-certs"
+  log "---------------------------------------------------------"
+  log ""
+fi
+log "---------------------------------------------------------"
+log "🔹 JOIN WORKER NODES:"
 log "To join a worker node, run the following command on the worker node:"
-log "  sudo kubeadm join $PRIMARY_IP:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>"
+if [[ "$HA_MODE" == true ]]; then
+   log "  sudo kubeadm join $CP_ENDPOINT --token <token> --discovery-token-ca-cert-hash sha256:<hash>"
+else
+   log "  sudo kubeadm join $PRIMARY_IP:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>"
+fi
+log "---------------------------------------------------------"
 log ""
 log "To get the actual join command:"
 log "  sudo kubeadm token create --print-join-command"
