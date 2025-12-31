@@ -53,10 +53,65 @@ sudo bash k8s-single-node-cluster-setup.sh \
 | Option | Required | Description |
 |--------|----------|-------------|
 | `--hostname` | **Yes** | Rancher hostname (e.g., `rancher.example.com`) |
+### 🤝 Joining an Existing Cluster
+
+Use the script to prepare a blank node and join it to the cluster (as Worker or HA Control Plane). The script handles all node preparation (packages, kernel modules, systcl) automatically before joining.
+
+**Option A: Using the Script (Recommended for fresh nodes)**
+The script handles all node preparation (packages, kernel modules, sysctl) before joining.
+
+worker:
+```bash
+sudo bash k8s-single-node-cluster-setup.sh \
+  --join 192.168.1.100:6443 \
+  --token <token> \
+  --discovery-token-ca-cert-hash sha256:<hash>
+```
+
+control-plane (HA):
+```bash
+sudo bash k8s-single-node-cluster-setup.sh \
+  --join loadbalancer.example.com:6443 \
+  --token <token> \
+  --discovery-token-ca-cert-hash sha256:<hash> \
+  --control-plane \
+  --certificate-key <key>
+```
+
+**Option B: Using Native `kubeadm` (Manual)**
+If your node is already prepared (container runtime installed, swap off, etc.), you can run the join command directly:
+
+worker:
+```bash
+sudo kubeadm join 192.168.1.100:6443 \
+  --token <token> \
+  --discovery-token-ca-cert-hash sha256:<hash>
+```
+
+control-plane (HA):
+```bash
+sudo kubeadm join loadbalancer.example.com:6443 \
+  --token <token> \
+  --discovery-token-ca-cert-hash sha256:<hash> \
+  --control-plane --certificate-key <key>
+```
+
+---
+
+## 📋 Options
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--hostname` | **Yes** (Init) | Rancher hostname (e.g., `rancher.example.com`) |
 | `--iprange` | No | MetalLB IP pool range. If not provided, MetalLB is skipped. |
 | `--ingressip` | Conditional | Static IP for Ingress. Required if `--iprange` is set. |
 | `--ha` | No | Enable High Availability mode (init first control plane node). |
 | `--endpoint` | Conditional | Control Plane Endpoint (host:port). Defaults to `hostname:6443` if not set. |
+| `--join` | No | Join an existing cluster. Provide endpoint `host:port`. |
+| `--token` | Yes (Join) | Token for joining the cluster. |
+| `--discovery...` | Yes (Join) | Discovery token CA cert hash. |
+| `--control-plane`| No | Join as a Control Plane node. |
+| `--certificate-key`| Yes (CP Join)| Certificate key for joining as Control Plane. |
 | `-y`, `--force` | No | Skip all interactive confirmation prompts. |
 
 ---

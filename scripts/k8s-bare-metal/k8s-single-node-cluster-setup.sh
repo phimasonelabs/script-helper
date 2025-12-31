@@ -62,6 +62,12 @@ INGRESS_IP=""
 FORCE_MODE=false
 HA_MODE=false
 CP_ENDPOINT=""
+JOIN_MODE=false
+JOIN_ENDPOINT=""
+JOIN_TOKEN=""
+JOIN_HASH=""
+JOIN_CERT_KEY=""
+JOIN_CONTROL_PLANE=false
 # Function to detect primary IP address (most reliable method)
 # Uses the IP that would be used to reach external destinations
 get_primary_ip() {
@@ -82,6 +88,11 @@ usage() {
   echo "  --ha                   Enable High Availability mode (First control plane node)"
   echo "  --endpoint <host:port> Control Plane Endpoint (e.g., loadbalancer.example.com:6443)"
   echo "                         Optional if --ha is set (Defaults to $(hostname):6443)"
+  echo "  --join <endpoint>      Join an existing cluster (e.g., 10.0.0.1:6443)"
+  echo "  --token <token>        Token for joining"
+  echo "  --discovery-token-ca-cert-hash <hash>  Discovery token CA cert hash"
+  echo "  --control-plane        Join as a control plane node (requires --certificate-key)"
+  echo "  --certificate-key <key> Certificate key for joining control plane"
   echo "  -y, --yes, --force     Skip confirmation prompts (non-interactive mode)"
   echo "  -h, --help             Show this help message"
   echo ""
@@ -95,6 +106,12 @@ usage() {
   echo "  # HA Setup (First Control Plane Node):"
   echo "  $0 --hostname rancher.lab.local --ha --endpoint k8s-cluster.example.com:6443"
   echo ""
+  echo "  # Join as Worker Node:"
+  echo "  $0 --join 10.0.0.1:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:..."
+  echo ""
+  echo "  # Join as HA Control Plane Node:"
+  echo "  $0 --join lb.example.com:6443 --token ... --discovery-token-ca-cert-hash ... --control-plane --certificate-key ..."
+  echo ""
   exit 1
 }
 
@@ -105,6 +122,11 @@ while [[ "$#" -gt 0 ]]; do
     --ingressip) INGRESS_IP="$2"; shift ;;
     --ha) HA_MODE=true ;;
     --endpoint) CP_ENDPOINT="$2"; shift ;;
+    --join) JOIN_MODE=true; JOIN_ENDPOINT="$2"; shift ;;
+    --token) JOIN_TOKEN="$2"; shift ;;
+    --discovery-token-ca-cert-hash) JOIN_HASH="$2"; shift ;;
+    --certificate-key) JOIN_CERT_KEY="$2"; shift ;;
+    --control-plane) JOIN_CONTROL_PLANE=true ;;
     -y|--yes|--force) FORCE_MODE=true ;;
     -h|--help) usage ;;
     *) echo "Unknown parameter passed: $1"; usage ;;
@@ -129,9 +151,21 @@ PRIMARY_IP=$(get_primary_ip)
 echo "▶ Detected Primary IP: $PRIMARY_IP"
 
 # Validate required parameters
-if [[ -z "$RANCHER_HOSTNAME" ]]; then
-  echo "Error: --hostname is required."
-  usage
+if [[ "$JOIN_MODE" == false ]]; then
+  if [[ -z "$RANCHER_HOSTNAME" ]]; then
+    echo "Error: --hostname is required."
+    usage
+  fi
+else
+  # Join mode validation
+  if [[ -z "$JOIN_TOKEN" || -z "$JOIN_HASH" ]]; then
+    echo "Error: --token and --discovery-token-ca-cert-hash are required for join mode."
+    usage
+  fi
+  if [[ "$JOIN_CONTROL_PLANE" == true && -z "$JOIN_CERT_KEY" ]]; then
+     echo "Error: --certificate-key is required when joining as control-plane."
+     usage
+  fi
 fi
 
 # Determine if MetalLB should be enabled (based on whether --iprange is provided)
@@ -153,7 +187,8 @@ fi
 # Validate HA parameters
 if [[ "$HA_MODE" == true ]]; then
   if [[ -z "$CP_ENDPOINT" ]]; then
-    CP_ENDPOINT="$(hostname):6443"
+    # CP_ENDPOINT="$(hostname):6443"
+    CP_ENDPOINT="$RANCHER_HOSTNAME:6443"
     echo "Using default HA endpoint: $CP_ENDPOINT"
   fi
   # Basic check for endpoint reachability (optional but recommended)
@@ -179,6 +214,10 @@ fi
 if [[ "$HA_MODE" == true ]]; then
   echo "▶ HA Mode: ENABLED"
   echo "▶ Control Plane Endpoint: $CP_ENDPOINT"
+elif [[ "$JOIN_MODE" == true ]]; then
+  echo "▶ Mode: JOIN CLUSTER"
+  echo "▶ Join Endpoint: $JOIN_ENDPOINT"
+  echo "▶ Role: $(if [[ "$JOIN_CONTROL_PLANE" == true ]]; then echo "Control Plane"; else echo "Worker"; fi)"
 else
   echo "▶ HA Mode: DISABLED (Single Node)"
 fi
@@ -394,6 +433,56 @@ helm version
 echo "=============================================="
 echo "PHASE 1 COMPLETE: Node preparation finished!"
 echo "=============================================="
+
+# --- EXIT FOR JOIN MODE ---
+if [[ "$JOIN_MODE" == true ]]; then
+  log_step "Joining Cluster"
+  
+  JOIN_CMD="kubeadm join $JOIN_ENDPOINT --token $JOIN_TOKEN --discovery-token-ca-cert-hash $JOIN_HASH"
+  
+  if [[ "$JOIN_CONTROL_PLANE" == true ]]; then
+     log "Joining as CONTROL PLANE node..."
+     JOIN_CMD="$JOIN_CMD --control-plane --certificate-key $JOIN_CERT_KEY"
+  else
+     log "Joining as WORKER node..."
+  fi
+  
+  log "Executing: $JOIN_CMD"
+  eval "$JOIN_CMD" 2>&1 | tee -a "$LOG_FILE"
+  
+  if [[ "$JOIN_CONTROL_PLANE" == true ]]; then
+    log "Configuring kubeconfig for Control Plane..."
+    # Setup kubeconfig for root
+    mkdir -p $HOME/.kube
+    if [ -f /etc/kubernetes/admin.conf ]; then
+      cp /etc/kubernetes/admin.conf $HOME/.kube/config
+      chown $(id -u):$(id -g) $HOME/.kube/config
+      
+      # Setup kubeconfig for SUDO_USER if exists
+      if [[ -n "${SUDO_USER:-}" ]]; then
+        USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+        log "Setting up kubeconfig for user: $SUDO_USER ($USER_HOME)..."
+        mkdir -p "$USER_HOME/.kube"
+        cp /etc/kubernetes/admin.conf "$USER_HOME/.kube/config"
+        chown $(id -u "$SUDO_USER"):$(id -g "$SUDO_USER") "$USER_HOME/.kube/config"
+      fi
+      log "✅ Kubeconfig configured successfully."
+    else
+      log_warn "/etc/kubernetes/admin.conf not found. Kubeconfig setup skipped."
+    fi
+  fi
+  
+  log ""
+  log "=============================================="
+  log "✅ Node joined successfully!"
+  log "=============================================="
+  if [[ "$JOIN_CONTROL_PLANE" == true ]]; then
+     log "You can now run 'kubectl get nodes' to check status."
+  else
+     log "Check status on the control plane node: kubectl get nodes"
+  fi
+  exit 0
+fi
 if [[ "$FORCE_MODE" == false ]]; then
   read -p "Press Enter to continue with Control Plane setup..."
 fi
@@ -408,8 +497,17 @@ log_step "Phase 2: Control Plane Setup"
 log "Initializing Kubernetes control plane..."
 
 if [[ "$HA_MODE" == true ]]; then
+  # Ensure the endpoint resolves to the local IP (critical for first node bootstrap)
+  CP_HOST=$(echo $CP_ENDPOINT | cut -d: -f1)
+  if ! grep -q "$CP_HOST" /etc/hosts; then
+    log "Adding $CP_HOST to /etc/hosts pointing to $PRIMARY_IP for bootstrap..."
+    echo "$PRIMARY_IP $CP_HOST" >> /etc/hosts
+  else
+    log "$CP_HOST already found in /etc/hosts."
+  fi
+
   log "Setting up HA Control Plane with endpoint: $CP_ENDPOINT"
-  kubeadm init --control-plane-endpoint "$CP_ENDPOINT" --upload-certs --pod-network-cidr=10.244.0.0/16
+  kubeadm init --control-plane-endpoint "$CP_ENDPOINT" --apiserver-advertise-address="$PRIMARY_IP" --upload-certs --pod-network-cidr=10.244.0.0/16
 else
   log "Setting up Single Node Control Plane..."
   kubeadm init --pod-network-cidr=10.244.0.0/16
@@ -647,28 +745,45 @@ log ""
 log ""
 log "Commands to join other nodes to the cluster:"
 log ""
+
+# Detect effective endpoint for display
+if [[ "$HA_MODE" == true ]]; then
+  EFFECTIVE_ENDPOINT="$CP_ENDPOINT"
+else
+  EFFECTIVE_ENDPOINT="$PRIMARY_IP:6443"
+fi
+
 if [[ "$HA_MODE" == true ]]; then
   log "---------------------------------------------------------"
-  log "🔹 JOIN CONTROL PLANE NODES:"
-  log "To add more control plane nodes, run the following command:"
-  log "  sudo kubeadm join $CP_ENDPOINT --token <token> --discovery-token-ca-cert-hash sha256:<hash> --control-plane --certificate-key <key>"
+  log "🔹 JOIN CONTROL PLANE NODES (HA):"
+  log "To add more control plane nodes, run:"
+  log "  sudo kubeadm join $EFFECTIVE_ENDPOINT --token <token> --discovery-token-ca-cert-hash sha256:<hash> --control-plane --certificate-key <key>"
   log ""
-  log "To recall the certificate key (if needed):"
+  log "  # OR using this script:"
+  log "  sudo $0 --join $EFFECTIVE_ENDPOINT \\"
+  log "    --token <token> \\"
+  log "    --discovery-token-ca-cert-hash sha256:<hash> \\"
+  log "    --control-plane --certificate-key <key>"
+  log ""
+  log "To recall the certificate key (run on this node):"
   log "  sudo kubeadm init phase upload-certs --upload-certs"
   log "---------------------------------------------------------"
   log ""
 fi
+
 log "---------------------------------------------------------"
 log "🔹 JOIN WORKER NODES:"
-log "To join a worker node, run the following command on the worker node:"
-if [[ "$HA_MODE" == true ]]; then
-   log "  sudo kubeadm join $CP_ENDPOINT --token <token> --discovery-token-ca-cert-hash sha256:<hash>"
-else
-   log "  sudo kubeadm join $PRIMARY_IP:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>"
-fi
-log "---------------------------------------------------------"
+log "To join a worker node, run:"
+log "  sudo kubeadm join $EFFECTIVE_ENDPOINT --token <token> --discovery-token-ca-cert-hash sha256:<hash>"
 log ""
-log "To get the actual join command:"
+log "  # OR using this script:"
+log "  sudo $0 --join $EFFECTIVE_ENDPOINT \\"
+log "    --token <token> \\"
+log "    --discovery-token-ca-cert-hash sha256:<hash>"
+log "---------------------------------------------------------"
+
+log ""
+log "To get the actual join command (for Workers):"
 log "  sudo kubeadm token create --print-join-command"
 log ""
 log "📋 Full installation log saved to: $LOG_FILE"
