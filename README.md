@@ -9,6 +9,21 @@
 
 > A collection of modular scripts to bootstrap and manage a **High Availability Kubernetes cluster** on bare-metal or on-premise infrastructure.
 
+## ✨ Key Features
+
+- **🚀 Automated Cluster Bootstrap**: Set up a single-node or **High Availability (HA)** control plane in minutes.
+- **🤝 Easy Node Joining**: Integrated support for joining new Worker or Control Plane nodes to an existing cluster.
+- **🛠️ Battery-Included Stack**:
+  - **CNI**: Calico (v3.27+)
+  - **Storage**: Longhorn (v1.7.2)
+  - **Networking**: MetalLB (Layer 2) & Nginx Ingress
+  - **Management**: Rancher (v2.10+) & Cert-Manager
+- **🧹 Full Lifecycle**: Includes dedicated cleanup scripts to deeply reset nodes (remove data, CNI interfaces, configs).
+- **⚡ Zero Touch**: Supports a `-y/--force` mode for fully automated, non-interactive provisioning.
+
+## [📚 Documentation & Scripts](scripts/k8s-bare-metal)
+Full usage instructions, flag options, and troubleshooting guides are available in the [K8s Bare Metal](scripts/k8s-bare-metal) directory.
+
 ---
 
 ## 🔗 Community
