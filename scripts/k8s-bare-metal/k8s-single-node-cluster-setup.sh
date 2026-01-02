@@ -19,9 +19,10 @@ log() {
 
 # Function to log step start
 log_step() {
+  STEP_COUNTER=$((STEP_COUNTER + 1))
   CURRENT_STEP="$1"
   log "=============================================="
-  log "STEP: $CURRENT_STEP"
+  log "STEP [$STEP_COUNTER/$TOTAL_STEPS]: $CURRENT_STEP"
   log "=============================================="
 }
 
@@ -62,6 +63,8 @@ INGRESS_IP=""
 FORCE_MODE=false
 HA_MODE=false
 CP_ENDPOINT=""
+STEP_COUNTER=0
+TOTAL_STEPS=10 # Default for full setup
 JOIN_MODE=false
 JOIN_ENDPOINT=""
 JOIN_TOKEN=""
@@ -182,6 +185,17 @@ else
   INGRESS_IP="${INGRESS_IP:-$PRIMARY_IP}"
   # When MetalLB is skipped, use primary IP for ingress (hostNetwork mode)
   INGRESS_IP="${INGRESS_IP:-$PRIMARY_IP}"
+fi
+
+# Calculate Total Steps based on configuration
+if [[ "$JOIN_MODE" == true ]]; then
+  TOTAL_STEPS=2 # Phase 1 + Join
+else
+  if [[ "$ENABLE_METALLB" == true ]]; then
+    TOTAL_STEPS=10
+  else
+    TOTAL_STEPS=9 # Skip MetalLB phase
+  fi
 fi
 
 # Validate HA parameters
