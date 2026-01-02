@@ -42,6 +42,39 @@ log_error() {
   log "❌ ERROR: $*"
 }
 
+# Function to wait for pods with a long timeout (10 mins)
+wait_for_pods() {
+  local namespace="$1"
+  local label="$2"
+  local timeout_sec=600 # 10 minutes
+  local interval=10
+  local elapsed=0
+
+  log "⏳ Waiting for pods in namespace '$namespace' with label '$label' to be ready..."
+  
+  while [ $elapsed -lt $timeout_sec ]; do
+    # Check if pods exist
+    if ! kubectl get pods -n "$namespace" -l "$label" &>/dev/null; then
+       log "   Pods not found yet... waiting."
+    else
+       # Check readiness
+       NOT_READY=$(kubectl get pods -n "$namespace" -l "$label" -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep -v "True" | wc -l)
+       TOTAL=$(kubectl get pods -n "$namespace" -l "$label" --no-headers | wc -l)
+       
+       if [ "$TOTAL" -gt 0 ] && [ "$NOT_READY" -eq 0 ]; then
+         log "✅ All $TOTAL pods in '$namespace' are ready."
+         return 0
+       fi
+       log "   $NOT_READY/$TOTAL pods not ready... ($elapsed/${timeout_sec}s)"
+    fi
+    sleep $interval
+    elapsed=$((elapsed + interval))
+  done
+
+  log_error "Timeout waiting for pods in '$namespace'."
+  return 1
+}
+
 # Trap to log on exit/error
 trap 'if [ $? -ne 0 ]; then log_error "Script failed at step: $CURRENT_STEP"; log "Check log file: $LOG_FILE"; fi' EXIT
 
@@ -563,7 +596,9 @@ log_step "Phase 4: Setup Longhorn Storage"
 log "Installing Longhorn storage..."
 helm repo add longhorn https://charts.longhorn.io
 helm repo update
-helm install longhorn longhorn/longhorn --namespace longhorn-system --create-namespace --version 1.7.2
+helm install longhorn longhorn/longhorn --namespace longhorn-system --create-namespace --version 1.7.2 --timeout 15m
+# Wait for Longhorn to start initializing
+sleep 30
 echo "Longhorn storage deployed."
 if [[ "$FORCE_MODE" == false ]]; then
   read -p "Press Enter to continue with Metrics Server setup..."
@@ -593,7 +628,8 @@ helm repo update
 kubectl apply --validate=false -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.3/cert-manager.crds.yaml
 helm install cert-manager jetstack/cert-manager \
   --namespace cert-manager --create-namespace \
-  --version v1.12.3
+  --version v1.12.3 \
+  --timeout 10m
 echo "cert-manager installed."
 
 # --- Deploy MetalLB Load-Balancer (Conditional) ---
@@ -607,8 +643,8 @@ if [[ "$ENABLE_METALLB" == true ]]; then
   kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml 2>&1 | tee -a "$LOG_FILE"
   
   # Wait for MetalLB controller to be ready
-  echo "Waiting for MetalLB controller to be ready..."
-  kubectl wait --for=condition=ready pod -l app=metallb -n metallb-system --timeout=120s || true
+  # Wait for MetalLB controller to be ready
+  wait_for_pods "metallb-system" "app=metallb"
   sleep 10
   
   cat <<EOF | kubectl apply -f -
@@ -651,7 +687,8 @@ if [[ "$ENABLE_METALLB" == true ]]; then
     --set auth.database=rancherdb \
     --set primary.persistence.storageClass=longhorn \
     --set primary.persistence.size=10Gi \
-    --set service.type=LoadBalancer
+    --set service.type=LoadBalancer \
+    --timeout 10m
 else
   # Without MetalLB: Use ClusterIP (internal access only)
   helm install postgresql bitnami/postgresql \
@@ -661,7 +698,8 @@ else
     --set auth.database=rancherdb \
     --set primary.persistence.storageClass=longhorn \
     --set primary.persistence.size=10Gi \
-    --set service.type=ClusterIP
+    --set service.type=ClusterIP \
+    --timeout 10m
 fi
 echo "PostgreSQL for Rancher deployed."
 if [[ "$FORCE_MODE" == false ]]; then
@@ -694,7 +732,8 @@ helm install rancher rancher-latest/rancher \
   --set global.database.external.username=rancher \
   --set global.database.external.password='rancher#2025' \
   --set global.database.external.database=rancherdb \
-  --set global.imagePullSecrets=rancher-registry-secret
+  --set global.imagePullSecrets=rancher-registry-secret \
+  --timeout 10m
 echo "Rancher Web UI deployment initiated with hostname: $RANCHER_HOSTNAME."
 if [[ "$FORCE_MODE" == false ]]; then
   read -p "Press Enter to continue with Nginx Ingress Controller installation..."
