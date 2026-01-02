@@ -250,6 +250,7 @@ apt-get install -y \
 
 # --- Add Kubernetes Repository ---
 echo "Adding Kubernetes GPG key and repository..."
+mkdir -p /etc/apt/keyrings
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
