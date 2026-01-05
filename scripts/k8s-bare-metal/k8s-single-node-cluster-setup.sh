@@ -97,6 +97,10 @@ FORCE_MODE=false
 HA_MODE=false
 CP_ENDPOINT=""
 STEP_COUNTER=0
+HA_MODE=false
+CP_ENDPOINT=""
+APISERVER_CERT_EXTRA_SANS=""
+STEP_COUNTER=0
 TOTAL_STEPS=10 # Default for full setup
 JOIN_MODE=false
 JOIN_ENDPOINT=""
@@ -119,11 +123,12 @@ usage() {
   echo "  --hostname <hostname>  Rancher hostname (e.g., rancher.lab.local) [REQUIRED]"
   echo "  --ingressip <ip>       Static IP for Nginx Ingress LoadBalancer"
   echo "                         Required when --iprange is set, otherwise auto-detected"
-  echo "  --ingressip <ip>       Static IP for Nginx Ingress LoadBalancer"
-  echo "                         Required when --iprange is set, otherwise auto-detected"
   echo "  --ha                   Enable High Availability mode (First control plane node)"
   echo "  --endpoint <host:port> Control Plane Endpoint (e.g., loadbalancer.example.com:6443)"
   echo "                         Optional if --ha is set (Defaults to $(hostname):6443)"
+  echo "  --apiserver-cert-extra-sans <sans>"
+  echo "                         Optional comma-separated list of extra SANs for API Server certificate"
+  echo "                         (e.g., \"k8s.example.com,10.0.0.1\")"
   echo "  --join <endpoint>      Join an existing cluster (e.g., 10.0.0.1:6443)"
   echo "  --token <token>        Token for joining"
   echo "  --discovery-token-ca-cert-hash <hash>  Discovery token CA cert hash"
@@ -158,6 +163,7 @@ while [[ "$#" -gt 0 ]]; do
     --ingressip) INGRESS_IP="$2"; shift ;;
     --ha) HA_MODE=true ;;
     --endpoint) CP_ENDPOINT="$2"; shift ;;
+    --apiserver-cert-extra-sans) APISERVER_CERT_EXTRA_SANS="$2"; shift ;;
     --join) JOIN_MODE=true; JOIN_ENDPOINT="$2"; shift ;;
     --token) JOIN_TOKEN="$2"; shift ;;
     --discovery-token-ca-cert-hash) JOIN_HASH="$2"; shift ;;
@@ -261,6 +267,9 @@ fi
 if [[ "$HA_MODE" == true ]]; then
   echo "▶ HA Mode: ENABLED"
   echo "▶ Control Plane Endpoint: $CP_ENDPOINT"
+  if [[ -n "$APISERVER_CERT_EXTRA_SANS" ]]; then
+     echo "▶ Extra SANs: $APISERVER_CERT_EXTRA_SANS"
+  fi
 elif [[ "$JOIN_MODE" == true ]]; then
   echo "▶ Mode: JOIN CLUSTER"
   echo "▶ Join Endpoint: $JOIN_ENDPOINT"
@@ -555,10 +564,23 @@ if [[ "$HA_MODE" == true ]]; then
   fi
 
   log "Setting up HA Control Plane with endpoint: $CP_ENDPOINT"
-  kubeadm init --control-plane-endpoint "$CP_ENDPOINT" --apiserver-advertise-address="$PRIMARY_IP" --upload-certs --pod-network-cidr=10.244.0.0/16
+  
+  KUBEADM_INIT_CMD="kubeadm init --control-plane-endpoint \"$CP_ENDPOINT\" --apiserver-advertise-address=\"$PRIMARY_IP\" --upload-certs --pod-network-cidr=10.244.0.0/16"
+  
+  if [[ -n "$APISERVER_CERT_EXTRA_SANS" ]]; then
+     KUBEADM_INIT_CMD="$KUBEADM_INIT_CMD --apiserver-cert-extra-sans=\"$APISERVER_CERT_EXTRA_SANS\""
+  fi
+  
+  eval "$KUBEADM_INIT_CMD"
 else
   log "Setting up Single Node Control Plane..."
-  kubeadm init --pod-network-cidr=10.244.0.0/16
+  
+  KUBEADM_INIT_CMD="kubeadm init --pod-network-cidr=10.244.0.0/16"
+   if [[ -n "$APISERVER_CERT_EXTRA_SANS" ]]; then
+     KUBEADM_INIT_CMD="$KUBEADM_INIT_CMD --apiserver-cert-extra-sans=\"$APISERVER_CERT_EXTRA_SANS\""
+  fi
+  
+  eval "$KUBEADM_INIT_CMD"
 fi
 
 # Setup kubeconfig for root (current user)
@@ -744,6 +766,7 @@ log_step "Phase 10: Install Nginx Ingress Controller"
 log "Installing Nginx Ingress Controller..."
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/baremetal/deploy.yaml 2>&1 | tee -a "$LOG_FILE"
 
+
 log "Waiting for ingress-nginx-controller deployment to be ready..."
 while true; do
   READY=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
@@ -755,8 +778,14 @@ while true; do
   fi
   
   log "⏳ Waiting for ingress-nginx-controller... ($READY/$DESIRED replicas ready)"
-  sleep 10
+  sleep 5
 done
+
+log "Ingress Controller is ready."
+
+# Annotate Rancher Ingress to use Nginx Class
+log "Annotating Rancher Ingress to use Nginx Ingress Controller..."
+kubectl annotate ingress rancher -n cattle-system kubernetes.io/ingress.class=nginx --overwrite || log_warn "Failed to annotate Rancher ingress (rancher/cattle-system). Only critical if you see 'default backend - 404'."
 
 echo "Patching ingress-nginx-controller to use hostNetwork and proper dnsPolicy..."
 kubectl patch deployment ingress-nginx-controller -n ingress-nginx \
