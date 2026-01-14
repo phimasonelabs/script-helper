@@ -58,7 +58,7 @@ wait_for_pods() {
        log "   Pods not found yet... waiting."
     else
        # Check readiness
-       NOT_READY=$(kubectl get pods -n "$namespace" -l "$label" -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep -v "True" | wc -l)
+       NOT_READY=$(kubectl get pods -n "$namespace" -l "$label" -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep -v "True" | wc -l || true)
        TOTAL=$(kubectl get pods -n "$namespace" -l "$label" --no-headers | wc -l)
        
        if [ "$TOTAL" -gt 0 ] && [ "$NOT_READY" -eq 0 ]; then
