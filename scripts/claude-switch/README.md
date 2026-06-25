@@ -29,13 +29,41 @@ From the repo root (installs `claude-switch` + the `claude-cloud` / `claude-huaw
 # custom location:  ./install.sh claude-switch --bindir /usr/local/bin
 ```
 
-Then set up your key file:
+## 🔑 Set up your API key
+
+The key lives in `~/.huawei-maas` (chmod 600, never committed). Pick one:
+
+**Automated (recommended)** — `claude-switch setup` writes the file for you:
+
+```bash
+# interactive: prompts for the key (hidden input)
+claude-switch setup --model glm-5.2
+
+# non-interactive: key from an env var (keeps it out of shell history & `ps`)
+HUAWEI_MAAS_TOKEN='UUIy55...' claude-switch setup --model glm-5.2 --verify
+
+# or from a file / stdin
+claude-switch setup --token-file ./my-key.txt --model glm-5.2
+printf '%s' "$KEY" | claude-switch setup --token-stdin
+```
+
+**One command — install *and* configure** (installer `--setup` pass-through):
+
+```bash
+HUAWEI_MAAS_TOKEN='UUIy55...' ./install.sh claude-switch --setup --model glm-5.2
+```
+
+**Manual** — copy the template and edit it:
 
 ```bash
 cp scripts/claude-switch/huawei-maas.example ~/.huawei-maas
 chmod 600 ~/.huawei-maas
-# edit ~/.huawei-maas and paste your MaaS API key on the first non-comment line
+# put your MaaS API key on the first non-comment line
 ```
+
+> ⚠️ `--token '<KEY>'` works too, but the key then appears in your shell history and `ps`.
+> Prefer the interactive prompt, `$HUAWEI_MAAS_TOKEN`, `--token-file`, or `--token-stdin`.
+> `setup` merges into an existing file, so `claude-switch setup --model glm-5.1` keeps your key.
 
 ## 🧭 Usage
 
@@ -44,6 +72,7 @@ chmod 600 ~/.huawei-maas
 | `claude-cloud [claude args…]` | Anthropic Claude (your login/subscription) |
 | `claude-huawei [claude args…]` | Huawei MaaS GLM (default `glm-5.2`) |
 | `claude-switch cloud \| huawei [args…]` | Same as above (aliases: `glm`, `maas`) |
+| `claude-switch setup [opts]` | Create/update `~/.huawei-maas` (automates API-key handling) |
 | `claude-switch check` | Probe endpoint + model, **no** Claude launch |
 | `claude-switch models` | List models your key can see (catalog) |
 | `claude-switch help` | Usage |

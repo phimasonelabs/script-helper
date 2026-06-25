@@ -14,6 +14,7 @@
 #   --link         symlink tools to this repo (dev mode; updates on git pull)
 #   --uninstall    remove the selected tools' files from bindir
 #   --list         list installable tools and exit
+#   --setup ARGS   after install, run "<tool> setup ARGS" (one tool; configures it)
 #   -h, --help     show this help
 #
 # Examples:
@@ -22,6 +23,7 @@
 #   ./install.sh --link                   # dev mode (symlink into the repo)
 #   ./install.sh --bindir /usr/local/bin  # custom location
 #   ./install.sh --uninstall claude-switch
+#   HUAWEI_MAAS_TOKEN=... ./install.sh claude-switch --setup --model glm-5.2
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -48,6 +50,7 @@ Usage: ./install.sh [options] [tool ...]
   --link         symlink to this repo (dev mode; updates on git pull)
   --uninstall    remove the selected tools' files from bindir
   --list         list installable tools and exit
+  --setup ARGS   after install, run "<tool> setup ARGS" (one tool only)
   -h, --help     show this help
 
 Examples:
@@ -56,10 +59,13 @@ Examples:
   ./install.sh --link                   dev mode (symlink into the repo)
   ./install.sh --bindir /usr/local/bin  custom location
   ./install.sh --uninstall claude-switch
+  HUAWEI_MAAS_TOKEN=... ./install.sh claude-switch --setup --model glm-5.2
 USAGE
 }
 
 TOOLS=()
+SETUP=0
+SETUP_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --bindir)   BINDIR="${2:?--bindir needs a directory}"; shift 2 ;;
@@ -69,6 +75,7 @@ while [ $# -gt 0 ]; do
     --uninstall|--remove) ACTION="uninstall"; shift ;;
     --list|-l)  ACTION="list"; shift ;;
     -h|--help)  usage; exit 0 ;;
+    --setup)    shift; SETUP=1; while [ $# -gt 0 ]; do SETUP_ARGS+=("$1"); shift; done ;;
     --) shift; while [ $# -gt 0 ]; do TOOLS+=("$1"); shift; done ;;
     -*) die "unknown option: $1 (try --help)" ;;
     *)  TOOLS+=("$1"); shift ;;
@@ -141,6 +148,20 @@ for t in $SELECTED; do
     done < "$tdir/links.txt"
   fi
 done
+
+# Optional post-install setup: run "<tool> setup <args>" against the just-installed
+# primary executable (the bin whose name matches the module/tool name). Useful for
+# tools that need credentials, e.g.:  --setup --token '<KEY>' --model glm-5.2
+if [ "${SETUP:-0}" = "1" ]; then
+  [ "$ACTION" = "install" ] || die "--setup is only valid when installing"
+  ntools="$(printf '%s\n' $SELECTED | grep -c . || true)"
+  [ "$ntools" = "1" ] || die "--setup requires exactly one tool (selected: $(echo $SELECTED | tr '\n' ' '))"
+  tool="$(printf '%s' $SELECTED | tr -d '[:space:]')"
+  primary="$BINDIR/$tool"
+  [ -x "$primary" ] || die "--setup: no primary executable '$tool' found in $BINDIR"
+  info "Post-install setup → $tool setup"
+  "$primary" setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
+fi
 
 if [ "$ACTION" = "install" ]; then
   case ":$PATH:" in
