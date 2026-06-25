@@ -15,6 +15,26 @@
 | :--- | :--- |
 | **[K8s Bare Metal](scripts/k8s-bare-metal)** | Scripts to bootstrap HA Kubernetes clusters on bare-metal/VMs (Rancher, Calico, Longhorn). |
 | **[Cloudflare](scripts/cloudflare)** | Automations for Cloudflare Worker & Pages deployment and management. |
+| **[Claude Switch](scripts/claude-switch)** | Toggle the Claude Code CLI between Anthropic Cloud and Huawei MaaS (GLM) models. |
+
+---
+
+## 🛠 Installation
+
+Some modules ship runnable CLI tools (any `scripts/<module>/bin/`). Install them into your bin directory with the bundled installer:
+
+```bash
+git clone https://github.com/phimasonelabs/script-helper.git
+cd script-helper
+
+./install.sh --list                   # list installable tools
+./install.sh                          # install all tools into ~/.local/bin
+./install.sh claude-switch            # install a single tool
+./install.sh --bindir /usr/local/bin  # custom location
+./install.sh --uninstall claude-switch
+```
+
+`make install` / `make list` / `make uninstall` wrap the same script. Use `--link` (dev mode) to symlink tools to the repo so `git pull` updates them in place.
 
 ---
 

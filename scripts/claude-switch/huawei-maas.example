@@ -1,0 +1,16 @@
+# ~/.huawei-maas — credentials/config for `claude-huawei` (Huawei MaaS / GLM).
+#
+# Setup:
+#   cp scripts/claude-switch/huawei-maas.example ~/.huawei-maas
+#   chmod 600 ~/.huawei-maas
+#   # then replace the placeholder below with your real MaaS API key
+#
+# The FIRST non-comment line with no '=' is taken as your API key (the only
+# required value). Lines starting with '#' are ignored.
+PUT-YOUR-HUAWEI-MAAS-API-KEY-HERE
+#
+# Optional overrides (uncomment & edit). Matching CLAUDE_HUAWEI_* env vars win
+# over these file values at runtime.
+# model=glm-5.2
+# region=ap-southeast-1
+# base_url=https://api-ap-southeast-1.modelarts-maas.com/anthropic

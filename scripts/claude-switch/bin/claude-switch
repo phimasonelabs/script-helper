@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# claude-switch — run Claude Code against either Anthropic Cloud or Huawei MaaS (GLM).
+#
+# Two friendly entrypoints (symlinks to this one script):
+#   claude-cloud   [claude args...]   normal Anthropic Claude (your login / subscription)
+#   claude-huawei  [claude args...]   Huawei MaaS GLM via its Anthropic-compatible endpoint
+#
+# Or call this script directly:
+#   claude-switch cloud   [claude args...]
+#   claude-switch huawei  [claude args...]
+#   claude-switch check        # probe the Huawei endpoint/model without launching Claude
+#   claude-switch models       # list the models your Huawei key can see
+#   claude-switch help
+#
+# ── Huawei config ────────────────────────────────────────────────────────────
+# Key file: ~/.huawei-maas   (override with $CLAUDE_HUAWEI_KEYFILE)
+#   Either a single line containing JUST your MaaS API key (current setup), OR
+#   key=, model=, base_url=, region= lines (any subset) for one-place config:
+#       key=UUIy55...
+#       model=glm-5.2
+#       region=ap-southeast-1
+#
+# Env overrides (win over the file, handy for one-off runs):
+#   CLAUDE_HUAWEI_MODEL      default: glm-5.2
+#   CLAUDE_HUAWEI_REGION     default: ap-southeast-1
+#   CLAUDE_HUAWEI_BASE_URL   default: https://api-<region>.modelarts-maas.com/anthropic
+#   CLAUDE_HUAWEI_NO_CHECK=1 skip the preflight reachability probe
+#
+set -euo pipefail
+
+PROG="$(basename "$0")"
+DEFAULT_REGION="ap-southeast-1"
+DEFAULT_MODEL="glm-5.2"
+KEYFILE="${CLAUDE_HUAWEI_KEYFILE:-$HOME/.huawei-maas}"
+
+# ── pretty logging (all to stderr so Claude's stdout stays clean) ─────────────
+_c() { [ -t 2 ] && printf '\033[%sm' "$1" >&2 || true; }
+err()  { _c 31; printf '%s\n' "$*" >&2; _c 0; }
+warn() { _c 33; printf '%s\n' "$*" >&2; _c 0; }
+info() { _c 36; printf '%s\n' "$*" >&2; _c 0; }
+ok()   { _c 32; printf '%s\n' "$*" >&2; _c 0; }
+
+# ── resolve the REAL claude binary (none of our names is "claude", so safe) ───
+REAL_CLAUDE="$(command -v claude 2>/dev/null || true)"
+
+# ── load + parse Huawei config (sets KEY MODEL REGION BASE_URL) ───────────────
+load_huawei_config() {
+  [ -f "$KEYFILE" ] || { err "Huawei key file not found: $KEYFILE"; exit 1; }
+  KEY=""; local F_MODEL="" F_BASEURL="" F_REGION="" line k v
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"          # ltrim
+    line="${line%"${line##*[![:space:]]}"}"          # rtrim
+    [ -z "$line" ] && continue
+    case "$line" in \#*) continue ;; esac
+    case "$line" in
+      *=*)
+        k="$(printf '%s' "${line%%=*}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+        v="${line#*=}"
+        v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"   # trim
+        v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"               # strip quotes
+        case "$k" in
+          key|api_key|apikey|token|auth_token) KEY="$v" ;;
+          model)                               F_MODEL="$v" ;;
+          base_url|baseurl|url)                F_BASEURL="$v" ;;
+          region)                              F_REGION="$v" ;;
+        esac
+        ;;
+      *) [ -z "$KEY" ] && KEY="$line" ;;                                 # bare key line
+    esac
+  done < "$KEYFILE"
+  [ -n "$KEY" ] || { err "No API key found in $KEYFILE"; exit 1; }
+
+  REGION="${CLAUDE_HUAWEI_REGION:-${F_REGION:-$DEFAULT_REGION}}"
+  MODEL="${CLAUDE_HUAWEI_MODEL:-${F_MODEL:-$DEFAULT_MODEL}}"
+  BASE_URL="${CLAUDE_HUAWEI_BASE_URL:-${F_BASEURL:-https://api-${REGION}.modelarts-maas.com/anthropic}}"
+}
+
+# ── preflight: one tiny Anthropic-style request to confirm model is reachable ─
+# Key travels via curl -K- (stdin), never on argv, so it can't leak through `ps`.
+preflight() {
+  [ "${CLAUDE_HUAWEI_NO_CHECK:-0}" = "1" ] && return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  local tmp code json
+  tmp="$(mktemp -t claude_huawei_pf.XXXXXX)"
+  json='{"model":"'"$MODEL"'","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}'
+  code="$(curl -sS -m 25 -o "$tmp" -w '%{http_code}' \
+            -H 'anthropic-version: 2023-06-01' -H 'Content-Type: application/json' \
+            --data "$json" -K- "${BASE_URL}/v1/messages" <<EOF || true
+header = "Authorization: Bearer ${KEY}"
+EOF
+)"
+  local body; body="$(cat "$tmp" 2>/dev/null || true)"; rm -f "$tmp"
+  case "$code" in
+    200) ok "  ✓ reachable — model '${MODEL}' responded OK" ;;
+    403) err   "  ✗ model '${MODEL}' → HTTP 403 (your key is not entitled to it yet)."
+         warn  "    Fix: enable/subscribe '${MODEL}' in the Huawei MaaS console, or use a model"
+         warn  "         your key already has, e.g.:  CLAUDE_HUAWEI_MODEL=glm-5.1 ${PROG} ..."
+         warn  "    (glm-5.1, glm-5, deepseek-v3.2 are accessible today — 'claude-switch models')"
+         return 1 ;;
+    *)   warn  "  ⚠ preflight HTTP ${code} for '${MODEL}': ${body:0:200}" ;;
+  esac
+  return 0
+}
+
+# ── list models the key can see (catalog; access still depends on entitlement) ─
+list_models() {
+  load_huawei_config
+  command -v curl >/dev/null 2>&1 || { err "curl is required for 'models'"; exit 1; }
+  info "Models visible to your key in region ${REGION}:"
+  curl -sS -m 25 -K- "https://api-${REGION}.modelarts-maas.com/v1/models" <<EOF | \
+    python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception as e: print("  (could not parse response)"); sys.exit(0)
+for m in (d.get("data") or []):
+    print("  -", m.get("id") if isinstance(m,dict) else m)'
+header = "Authorization: Bearer ${KEY}"
+EOF
+}
+
+# ── run modes ────────────────────────────────────────────────────────────────
+need_real_claude() {
+  [ -n "$REAL_CLAUDE" ] || { err "claude CLI not found in PATH."; exit 127; }
+}
+
+# args that don't talk to the model API → skip the preflight probe
+skip_preflight_for() {
+  case "${1:-}" in
+    -v|--version|--help|-h|update|doctor|mcp|config|install) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+run_cloud() {
+  need_real_claude
+  unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY \
+        ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL \
+        ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL \
+        CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 2>/dev/null || true
+  info "→ Claude Cloud (Anthropic — your login/subscription)"
+  exec "$REAL_CLAUDE" "$@"
+}
+
+run_huawei() {
+  need_real_claude
+  load_huawei_config
+  info "→ Claude via Huawei MaaS   model=${MODEL}   endpoint=${BASE_URL}"
+  if ! skip_preflight_for "${1:-}"; then
+    if ! preflight; then
+      warn  "  Aborting. Re-run with a working model, or CLAUDE_HUAWEI_NO_CHECK=1 to launch anyway."
+      exit 1
+    fi
+  fi
+  export ANTHROPIC_BASE_URL="$BASE_URL"
+  export ANTHROPIC_AUTH_TOKEN="$KEY"
+  unset  ANTHROPIC_API_KEY 2>/dev/null || true
+  # Map every model "slot" to the GLM model so background/haiku/sonnet/opus
+  # routing never tries to reach a real claude-* id that MaaS doesn't host.
+  export ANTHROPIC_MODEL="$MODEL"
+  export ANTHROPIC_SMALL_FAST_MODEL="$MODEL"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL"
+  export CLAUDE_CODE_SUBAGENT_MODEL="$MODEL"
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+  exec "$REAL_CLAUDE" "$@"
+}
+
+usage() {
+  cat >&2 <<USAGE
+claude-switch — toggle Claude Code between Anthropic Cloud and Huawei MaaS (GLM)
+
+  claude-cloud  [args...]      Anthropic Claude (your login/subscription)
+  claude-huawei [args...]      Huawei MaaS GLM (default model: ${DEFAULT_MODEL})
+
+  claude-switch cloud  [args]  same as claude-cloud
+  claude-switch huawei [args]  same as claude-huawei
+  claude-switch check          probe Huawei endpoint+model (no Claude launch)
+  claude-switch models         list models your Huawei key can see
+  claude-switch help           this help
+
+  Huawei key file : ${KEYFILE}
+  One-off model   : CLAUDE_HUAWEI_MODEL=glm-5.1 claude-huawei
+USAGE
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
+mode=""
+case "$PROG" in
+  claude-cloud)  mode=cloud ;;
+  claude-huawei) mode=huawei ;;
+esac
+
+if [ -z "$mode" ]; then
+  sub="${1:-}"; [ $# -gt 0 ] && shift || true
+  case "$sub" in
+    cloud)            mode=cloud ;;
+    huawei|glm|maas)  mode=huawei ;;
+    check)            load_huawei_config; info "endpoint=${BASE_URL}  model=${MODEL}"; preflight; exit $? ;;
+    models)           list_models; exit 0 ;;
+    ""|help|-h|--help) usage; exit 0 ;;
+    *) err "Unknown subcommand: '$sub'"; usage; exit 2 ;;
+  esac
+fi
+
+case "$mode" in
+  cloud)  run_cloud  "$@" ;;
+  huawei) run_huawei "$@" ;;
+esac
