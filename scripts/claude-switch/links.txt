@@ -1,0 +1,4 @@
+# Symlinks created in the install bin dir (both names relative to that dir).
+# Format:  <link-name>  <target-name>
+claude-cloud   claude-switch
+claude-huawei  claude-switch
