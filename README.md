@@ -32,6 +32,9 @@ cd script-helper
 ./install.sh claude-switch            # install a single tool
 ./install.sh --bindir /usr/local/bin  # custom location
 ./install.sh --uninstall claude-switch
+
+# install + configure a tool in one go (tool-specific --setup pass-through):
+HUAWEI_MAAS_TOKEN=... ./install.sh claude-switch --setup --model glm-5.2
 ```
 
 `make install` / `make list` / `make uninstall` wrap the same script. Use `--link` (dev mode) to symlink tools to the repo so `git pull` updates them in place.

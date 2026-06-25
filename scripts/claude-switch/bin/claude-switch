@@ -8,6 +8,7 @@
 # Or call this script directly:
 #   claude-switch cloud   [claude args...]
 #   claude-switch huawei  [claude args...]
+#   claude-switch setup        # write/update the key file, automating API-key handling
 #   claude-switch check        # probe the Huawei endpoint/model without launching Claude
 #   claude-switch models       # list the models your Huawei key can see
 #   claude-switch help
@@ -165,6 +166,127 @@ run_huawei() {
   exec "$REAL_CLAUDE" "$@"
 }
 
+setup_usage() {
+  cat >&2 <<USAGE
+claude-switch setup — create/update the Huawei key file (${KEYFILE})
+
+  --token VALUE      API key  (NOTE: visible in shell history & 'ps' — prefer the options below)
+  --token-stdin      read the API key from stdin
+  --token-file PATH  read the API key from the first line of PATH
+  --model NAME       set default model (e.g. glm-5.2)
+  --region NAME      set region (default ${DEFAULT_REGION})
+  --base-url URL     set a custom Anthropic-compatible base URL
+  --keyfile PATH     target file (default ${KEYFILE})
+  --verify           probe the endpoint/model after writing
+  --force, -f        overwrite an existing key without prompting
+
+  The API key is taken from --token, --token-file, --token-stdin, \$HUAWEI_MAAS_TOKEN,
+  or an interactive hidden prompt — in that order. Existing model/region/base_url
+  values are preserved unless you override them. The file is written chmod 600.
+
+  Examples:
+    claude-switch setup --token 'UUIy55...' --model glm-5.2 --verify
+    HUAWEI_MAAS_TOKEN='UUIy55...' claude-switch setup --model glm-5.2
+    printf '%s' "\$KEY" | claude-switch setup --token-stdin
+USAGE
+}
+
+# ── setup: write/update the key file (automates manual API-key handling) ──────
+cmd_setup() {
+  local token="" token_file="" token_stdin=0 set_model="" set_region="" set_baseurl="" \
+        target="$KEYFILE" force=0 verify=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --token)        token="${2:?--token needs a value}"; shift 2 ;;
+      --token=*)      token="${1#*=}"; shift ;;
+      --token-file)   token_file="${2:?--token-file needs a path}"; shift 2 ;;
+      --token-file=*) token_file="${1#*=}"; shift ;;
+      --token-stdin)  token_stdin=1; shift ;;
+      --model)        set_model="${2:?--model needs a value}"; shift 2 ;;
+      --model=*)      set_model="${1#*=}"; shift ;;
+      --region)       set_region="${2:?--region needs a value}"; shift 2 ;;
+      --region=*)     set_region="${1#*=}"; shift ;;
+      --base-url)     set_baseurl="${2:?--base-url needs a value}"; shift 2 ;;
+      --base-url=*)   set_baseurl="${1#*=}"; shift ;;
+      --keyfile)      target="${2:?--keyfile needs a path}"; shift 2 ;;
+      --keyfile=*)    target="${1#*=}"; shift ;;
+      --force|-f)     force=1; shift ;;
+      --verify)       verify=1; shift ;;
+      -h|--help)      setup_usage; return 0 ;;
+      *) err "setup: unknown option '$1'"; setup_usage; return 2 ;;
+    esac
+  done
+
+  # Resolve token: --token > --token-file > --token-stdin > $HUAWEI_MAAS_TOKEN > prompt
+  if [ -z "$token" ] && [ -n "$token_file" ]; then
+    [ -f "$token_file" ] || { err "setup: token file not found: $token_file"; return 1; }
+    token="$(head -n1 "$token_file" | tr -d '\r\n')"
+  fi
+  if [ -z "$token" ] && [ "$token_stdin" = 1 ]; then
+    IFS= read -r token || true; token="$(printf '%s' "$token" | tr -d '\r\n')"
+  fi
+  if [ -z "$token" ] && [ -n "${HUAWEI_MAAS_TOKEN:-}" ]; then
+    token="$(printf '%s' "$HUAWEI_MAAS_TOKEN" | tr -d '\r\n')"
+  fi
+
+  # Merge with any existing file so a partial setup keeps the other values.
+  local cur_key="" cur_model="" cur_region="" cur_baseurl="" line k v
+  if [ -f "$target" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+      [ -z "$line" ] && continue
+      case "$line" in \#*) continue ;; esac
+      case "$line" in
+        *=*) k="$(printf '%s' "${line%%=*}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+             v="${line#*=}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+             v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+             case "$k" in
+               key|api_key|apikey|token|auth_token) cur_key="$v" ;;
+               model)                cur_model="$v" ;;
+               region)               cur_region="$v" ;;
+               base_url|baseurl|url)  cur_baseurl="$v" ;;
+             esac ;;
+        *) [ -z "$cur_key" ] && cur_key="$line" ;;
+      esac
+    done < "$target"
+  fi
+
+  # Interactive hidden prompt only if we still have no key at all and a TTY exists.
+  if [ -z "$token" ] && [ -z "$cur_key" ] && [ -t 0 ]; then
+    printf 'Huawei MaaS API key: ' >&2; IFS= read -rs token; printf '\n' >&2
+    token="$(printf '%s' "$token" | tr -d '\r\n')"
+  fi
+
+  local f_token="${token:-$cur_key}" f_model="${set_model:-$cur_model}" \
+        f_region="${set_region:-$cur_region}" f_baseurl="${set_baseurl:-$cur_baseurl}"
+  [ -n "$f_token" ] || { err "setup: no API key (use --token, --token-stdin, --token-file, or \$HUAWEI_MAAS_TOKEN)"; return 1; }
+
+  # Confirm replacing a *different* existing key (interactive, unless --force).
+  if [ -n "$cur_key" ] && [ -n "$token" ] && [ "$token" != "$cur_key" ] && [ "$force" != 1 ] && [ -t 0 ]; then
+    printf '%s already has a key. Replace it? [y/N] ' "$target" >&2
+    local ans; IFS= read -r ans || true
+    case "$ans" in y|Y|yes|YES) : ;; *) err "setup: aborted (kept existing key)"; return 1 ;; esac
+  fi
+
+  # Write atomically with 600 perms (never world-readable, even briefly).
+  local tmp; tmp="$(mktemp -t huawei_maas.XXXXXX)"; chmod 600 "$tmp"
+  {
+    printf '%s\n' "$f_token"
+    [ -n "$f_model" ]   && printf 'model=%s\n'    "$f_model"
+    [ -n "$f_region" ]  && printf 'region=%s\n'   "$f_region"
+    [ -n "$f_baseurl" ] && printf 'base_url=%s\n' "$f_baseurl"
+  } > "$tmp"
+  mv "$tmp" "$target"; chmod 600 "$target"
+  ok "Wrote ${target} (chmod 600)  key=********  model=${f_model:-<default ${DEFAULT_MODEL}>}  region=${f_region:-<default ${DEFAULT_REGION}>}"
+
+  if [ "$verify" = 1 ]; then
+    KEYFILE="$target" load_huawei_config
+    info "Verifying: endpoint=${BASE_URL}  model=${MODEL}"
+    preflight; return $?
+  fi
+  return 0
+}
+
 usage() {
   cat >&2 <<USAGE
 claude-switch — toggle Claude Code between Anthropic Cloud and Huawei MaaS (GLM)
@@ -174,11 +296,13 @@ claude-switch — toggle Claude Code between Anthropic Cloud and Huawei MaaS (GL
 
   claude-switch cloud  [args]  same as claude-cloud
   claude-switch huawei [args]  same as claude-huawei
+  claude-switch setup [opts]   write/update the key file (API key, model, region)
   claude-switch check          probe Huawei endpoint+model (no Claude launch)
   claude-switch models         list models your Huawei key can see
   claude-switch help           this help
 
   Huawei key file : ${KEYFILE}
+  Set up the key  : claude-switch setup --token '<KEY>' --model glm-5.2
   One-off model   : CLAUDE_HUAWEI_MODEL=glm-5.1 claude-huawei
 USAGE
 }
@@ -195,6 +319,7 @@ if [ -z "$mode" ]; then
   case "$sub" in
     cloud)            mode=cloud ;;
     huawei|glm|maas)  mode=huawei ;;
+    setup)            cmd_setup "$@"; exit $? ;;
     check)            load_huawei_config; info "endpoint=${BASE_URL}  model=${MODEL}"; preflight; exit $? ;;
     models)           list_models; exit 0 ;;
     ""|help|-h|--help) usage; exit 0 ;;
