@@ -116,6 +116,7 @@ METALLB_IP_RANGE=""
 RANCHER_HOSTNAME=""
 INGRESS_IP=""
 FORCE_MODE=false
+NTP_SERVERS="${NTP_SERVERS:-}"   # --ntp-servers; comma-separated, e.g. "10.0.0.13,10.0.0.14"
 HA_MODE=false
 CP_ENDPOINT=""
 STEP_COUNTER=0
@@ -156,6 +157,10 @@ usage() {
   echo "  --discovery-token-ca-cert-hash <hash>  Discovery token CA cert hash"
   echo "  --control-plane        Join as a control plane node (requires --certificate-key)"
   echo "  --certificate-key <key> Certificate key for joining control plane"
+  echo "  --ntp-servers <list>   Comma-separated NTP server(s) reachable from this node"
+  echo "                         (e.g. \"10.0.0.13\"). Strongly recommended where outbound UDP/123 is"
+  echo "                         blocked: the distro default (ntp.ubuntu.com) is then unreachable and the"
+  echo "                         clock never syncs. Re-running applies it even on an already-built node."
   echo "  -y, --yes, --force     Skip confirmation prompts (non-interactive mode)"
   echo "  -h, --help             Show this help message"
   echo ""
@@ -191,6 +196,7 @@ while [[ "$#" -gt 0 ]]; do
     --discovery-token-ca-cert-hash) JOIN_HASH="$2"; shift ;;
     --certificate-key) JOIN_CERT_KEY="$2"; shift ;;
     --control-plane) JOIN_CONTROL_PLANE=true ;;
+    --ntp-servers) NTP_SERVERS="$2"; shift ;;
     -y|--yes|--force) FORCE_MODE=true ;;
     -h|--help) usage ;;
     *) echo "Unknown parameter passed: $1"; usage ;;
@@ -300,6 +306,68 @@ else
   echo "▶ HA Mode: DISABLED (Single Node)"
 fi
 echo "=============================================="
+
+# =============================================================================
+# TIME SYNC (NTP) — runs on every invocation (idempotent, outside the checkpoints)
+# =============================================================================
+# Kubernetes needs node clocks within ~1s of each other: TLS notBefore/notAfter,
+# ServiceAccount token nbf/exp, leader-election leases and CronJob timing all
+# compare timestamps across nodes. Ubuntu's default server (ntp.ubuntu.com) is
+# unreachable where outbound UDP/123 is blocked, leaving the clock free-running
+# (a real cluster drifted to a 3.5-minute spread that way). Never fatal: a problem
+# here is reported as a warning so it cannot abort a node build.
+ntp_synced() {
+  [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ] ||
+    timedatectl status 2>/dev/null | grep -qiE "(System clock|NTP) synchronized: yes"
+}
+
+configure_time_sync() {
+  if systemd-detect-virt --container --quiet 2>/dev/null; then
+    log_warn "Running in a container: the clock belongs to the host — skipping NTP configuration."
+    return 0
+  fi
+  if [ -n "$NTP_SERVERS" ]; then
+    local servers="${NTP_SERVERS//,/ }" s
+    if systemctl is-active --quiet chrony 2>/dev/null || systemctl is-active --quiet chronyd 2>/dev/null; then
+      if [ -d /etc/chrony/sources.d ]; then
+        : > /etc/chrony/sources.d/k8s-setup.sources
+        for s in $servers; do echo "server $s iburst" >> /etc/chrony/sources.d/k8s-setup.sources; done
+        chronyc reload sources >/dev/null 2>&1 || systemctl restart chrony 2>/dev/null || systemctl restart chronyd 2>/dev/null ||
+          log_warn "Could not reload chrony; restart it manually."
+        echo "chrony: NTP sources set to: $servers (/etc/chrony/sources.d/k8s-setup.sources)"
+      else
+        log_warn "chrony is active but has no /etc/chrony/sources.d (chrony < 4.0): add 'server <ip> iburst' for: $servers"
+        return 0
+      fi
+    else
+      mkdir -p /etc/systemd/timesyncd.conf.d
+      printf '[Time]\nNTP=%s\nFallbackNTP=\n' "$servers" > /etc/systemd/timesyncd.conf.d/k8s-setup-ntp.conf
+      timedatectl set-ntp true 2>/dev/null || true
+      if systemctl restart systemd-timesyncd 2>/dev/null; then
+        echo "systemd-timesyncd: NTP set to: $servers (/etc/systemd/timesyncd.conf.d/k8s-setup-ntp.conf)"
+      else
+        log_warn "systemd-timesyncd is not available: install chrony or systemd-timesyncd, then re-run with --ntp-servers."
+        return 0
+      fi
+    fi
+    for _ in $(seq 1 30); do ntp_synced && break; sleep 2; done   # up to 60s
+  fi
+  if ntp_synced; then
+    echo "Clock is NTP-synchronized."
+  else
+    log_warn "Clock is NOT NTP-synchronized. Node clocks will drift apart (certificates, tokens, leases and CronJobs compare time across nodes)."
+    if [ -z "$NTP_SERVERS" ]; then
+      log_warn "If outbound UDP/123 is blocked here, re-run with --ntp-servers <internal NTP server> (safe on an already-built node)."
+    else
+      log_warn "Check that $NTP_SERVERS answers on UDP/123 from this node: timedatectl timesync-status"
+    fi
+  fi
+}
+
+echo "=============================================="
+echo "Time sync (NTP)"
+echo "=============================================="
+configure_time_sync
 
 # =============================================================================
 # PHASE 1: NODE PREPARATION (Pre-requisites)

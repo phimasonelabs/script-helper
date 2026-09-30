@@ -112,7 +112,26 @@ sudo kubeadm join loadbalancer.example.com:6443 \
 | `--discovery...` | Yes (Join) | Discovery token CA cert hash. |
 | `--control-plane`| No | Join as a Control Plane node. |
 | `--certificate-key`| Yes (CP Join)| Certificate key for joining as Control Plane. |
+| `--ntp-servers` | Recommended | Comma-separated NTP server(s) reachable from the node, e.g. `10.0.0.13`. See [Time sync](#-time-sync-ntp). |
 | `-y`, `--force` | No | Skip all interactive confirmation prompts. |
+
+### 🕒 Time sync (NTP)
+
+Kubernetes needs node clocks within about a second of each other: TLS certificate validity,
+ServiceAccount token `nbf`/`exp`, leader-election leases and CronJob timing all compare timestamps
+across nodes. Ubuntu's default time server (`ntp.ubuntu.com`) is **unreachable wherever outbound
+UDP/123 is blocked**, and the clock then never syncs; nodes drift silently (minutes apart after a
+few months).
+
+- `--ntp-servers 10.0.0.13[,10.0.0.14]` points the node's time daemon at reachable servers
+  (a drop-in for `systemd-timesyncd`, or `sources.d` if `chrony` is active), then waits up to 60s
+  for sync.
+- This step runs on **every** invocation, outside the phase checkpoints. Re-running the provisioner
+  on an already-built node with `--ntp-servers` applies it without redoing anything else.
+- Without the flag, the script **warns** if the clock is not synchronized. It never aborts a build over time sync.
+- `k8s-installation.sh` takes the same setting as an environment variable:
+  `NTP_SERVERS="10.0.0.13" bash k8s-installation.sh`.
+- Check a node: `timedatectl timesync-status` (look for your server and a small offset).
 
 ---
 
