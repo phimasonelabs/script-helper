@@ -37,6 +37,20 @@ sudo sed -i '/^\s*SystemdCgroup\s*=/s/false/true/' /etc/containerd/config.toml
 sudo systemctl enable containerd
 sudo systemctl restart containerd
 
+# Time sync (NTP): Kubernetes needs node clocks within ~1s of each other. Where
+# outbound UDP/123 is blocked the distro default (ntp.ubuntu.com) never answers,
+# so point systemd-timesyncd at a reachable server:  NTP_SERVERS="10.0.0.13" bash k8s-installation.sh
+if [ -n "${NTP_SERVERS:-}" ]; then
+  sudo mkdir -p /etc/systemd/timesyncd.conf.d
+  printf '[Time]\nNTP=%s\nFallbackNTP=\n' "${NTP_SERVERS//,/ }" | sudo tee /etc/systemd/timesyncd.conf.d/k8s-setup-ntp.conf > /dev/null
+  sudo timedatectl set-ntp true || true
+  sudo systemctl restart systemd-timesyncd || echo "WARNING: could not restart systemd-timesyncd"
+  for _ in $(seq 1 30); do timedatectl status | grep -qiE "synchronized: yes" && break; sleep 2; done
+fi
+if ! timedatectl status | grep -qiE "synchronized: yes"; then
+  echo "WARNING: clock is NOT NTP-synchronized. If outbound UDP/123 is blocked, re-run with NTP_SERVERS=<internal NTP server>."
+fi
+
 # Disable swap
 sudo swapoff -a
 sudo sed -i '/swap/d' /etc/fstab
